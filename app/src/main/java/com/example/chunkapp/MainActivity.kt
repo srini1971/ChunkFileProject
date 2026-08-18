@@ -48,11 +48,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/**
+ * Main entry point for the demo app.
+ *
+ * Hosts the Jetpack Compose screen that lets the user pick a file, choose an
+ * encryption mode and chunk size, run the chunk+encrypt pipeline, and upload
+ * the resulting chunks to a configurable server with resume support.
+ */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
+            // Top-level Material 3 theme wrapping the whole screen.
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MainScreen()
@@ -62,38 +70,55 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class EncryptionMode { KEYSTORE, PASSWORD }
+/** Which encryption key source should be used to encrypt chunks. */
+private enum class EncryptionMode {
+    /** Android Keystore-backed key (keys never leave the device). */
+    KEYSTORE,
 
+    /** Password-derived key via PBKDF2 (salt stored alongside the chunks). */
+    PASSWORD
+}
+
+/**
+ * The main Compose screen. All state is kept in plain Compose state so the UI
+ * recomposes as chunking or uploads progress.
+ */
 @Composable
 private fun MainScreen() {
     val context = LocalContext.current
 
-    var selectedUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedName by remember { mutableStateOf<String?>(null) }
-    var cachedFile by remember { mutableStateOf<File?>(null) }
-    var chunkSizeMb by remember { mutableStateOf("4") }
+    // ---- UI state ---------------------------------------------------------
+    var selectedUri by remember { mutableStateOf<Uri?>(null) }   // picked content Uri
+    var selectedName by remember { mutableStateOf<String?>(null) } // display name of the file
+    var cachedFile by remember { mutableStateOf<File?>(null) }    // local copy used for chunking
+    var chunkSizeMb by remember { mutableStateOf("4") }           // chunk size in megabytes
     var mode by remember { mutableStateOf(EncryptionMode.KEYSTORE) }
-    var password by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }               // used only in PASSWORD mode
     var serverUrl by remember { mutableStateOf("http://10.0.2.2:8080") }
-    var results by remember { mutableStateOf<List<ChunkResult>>(emptyList()) }
-    var uploadStates by remember { mutableStateOf<Map<Int, UploadState>>(emptyMap()) }
-    var isWorking by remember { mutableStateOf(false) }
-    var isUploading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var message by remember { mutableStateOf<String?>(null) }
+    var results by remember { mutableStateOf<List<ChunkResult>>(emptyList()) } // generated chunks
+    var uploadStates by remember { mutableStateOf<Map<Int, UploadState>>(emptyMap()) } // per-chunk upload status
+    var isWorking by remember { mutableStateOf(false) }           // chunk pipeline running
+    var isUploading by remember { mutableStateOf(false) }         // upload running
+    var error by remember { mutableStateOf<String?>(null) }       // last error message
+    var message by remember { mutableStateOf<String?>(null) }     // last success message
 
+    // ---- File picker ------------------------------------------------------
+    // The Storage Access Framework document picker is used because it needs no
+    // runtime storage permission and works for any MIME type.
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             selectedUri = uri
             selectedName = uri.lastPathSegment
+            // Reset all derived state so a newly picked file starts fresh.
             cachedFile = null
             results = emptyList()
             uploadStates = emptyMap()
         }
     }
 
+    // Coroutine scope tied to the composition; used for chunking and uploads.
     val scope = rememberCoroutineScope()
 
     Column(
@@ -104,12 +129,15 @@ private fun MainScreen() {
     ) {
         Text("File Chunker", style = MaterialTheme.typography.headlineMedium)
 
+        // ---- File selection ------------------------------------------------
         Button(onClick = { filePicker.launch(arrayOf("*/*")) }) {
             Text("Select File")
         }
 
         selectedName?.let { Text("Selected: $it") }
 
+        // ---- Chunk size ----------------------------------------------------
+        // Digits-only input, capped at 3 digits, defaulting to 4 MB.
         OutlinedTextField(
             value = chunkSizeMb,
             onValueChange = { chunkSizeMb = it.filter { c -> c.isDigit() }.take(3) },
@@ -117,7 +145,7 @@ private fun MainScreen() {
             modifier = Modifier.fillMaxWidth()
         )
 
-        // Mode switcher
+        // ---- Encryption mode toggle ----------------------------------------
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = { mode = EncryptionMode.KEYSTORE }) {
                 Text("Keystore", color = if (mode == EncryptionMode.KEYSTORE)
@@ -129,6 +157,7 @@ private fun MainScreen() {
             }
         }
 
+        // Password field appears only in PASSWORD mode.
         if (mode == EncryptionMode.PASSWORD) {
             OutlinedTextField(
                 value = password,
@@ -140,6 +169,10 @@ private fun MainScreen() {
             )
         }
 
+        // ---- Chunk & encrypt ------------------------------------------------
+        // Copies the picked content Uri into the cache, runs the Okio streaming
+        // pipeline on Dispatchers.IO (see ChunkProvider), and collects every
+        // emitted chunk into the results list.
         Button(
             onClick = {
                 val uri = selectedUri ?: return@Button
@@ -178,7 +211,7 @@ private fun MainScreen() {
             }
         }
 
-        // Upload section
+        // ---- Upload section (only shown once chunks exist) ------------------
         if (results.isNotEmpty()) {
             OutlinedTextField(
                 value = serverUrl,
@@ -188,6 +221,7 @@ private fun MainScreen() {
                 modifier = Modifier.fillMaxWidth()
             )
 
+            // Aggregate upload progress across all chunks.
             val uploaded = uploadStates.values.count { it == UploadState.UPLOADED }
             LinearProgressIndicator(
                 progress = { if (results.isEmpty()) 0f else uploaded / results.size.toFloat() },
@@ -195,6 +229,8 @@ private fun MainScreen() {
             )
             Text("Uploaded $uploaded / ${results.size} chunks")
 
+            // Resumable upload: chunk indices already marked UPLOADED are skipped
+            // by ChunkUploader, so re-tapping resumes after a network failure.
             Button(
                 onClick = {
                     val file = cachedFile ?: return@Button
@@ -222,6 +258,7 @@ private fun MainScreen() {
             }
         }
 
+        // ---- Status / messages ----------------------------------------------
         error?.let {
             Text("Error: $it", color = MaterialTheme.colorScheme.error)
         }
@@ -236,6 +273,7 @@ private fun MainScreen() {
             }
         }
 
+        // ---- Results list ----------------------------------------------------
         Text("${results.size} chunks generated", style = MaterialTheme.typography.titleMedium)
 
         LazyColumn(
@@ -249,10 +287,16 @@ private fun MainScreen() {
     }
 }
 
+/**
+ * A card describing one encrypted chunk: its index and size, SHA-256 hash,
+ * a preview of the ciphertext, the PBKDF2 salt (password mode only) and the
+ * upload state if it has been uploaded.
+ */
 @Composable
 private fun ChunkCard(result: ChunkResult, state: UploadState?) {
     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Column(modifier = Modifier.padding(8.dp)) {
+            // Optional upload-state suffix appended to the chunk title.
             val stateText = when (state) {
                 UploadState.UPLOADED -> " • uploaded"
                 UploadState.FAILED -> " • FAILED"
@@ -263,6 +307,7 @@ private fun ChunkCard(result: ChunkResult, state: UploadState?) {
             Text("SHA-256: ${result.sha256Hex}", style = MaterialTheme.typography.bodySmall)
             Text("Ciphertext: ${result.ciphertextBase64.take(40)}…",
                 style = MaterialTheme.typography.bodySmall)
+            // Salt is only present when the password/PBKDF2 mode was used.
             if (result.salt.isNotEmpty()) {
                 Text("Salt: ${result.salt.joinToString("") { "%02x".format(it) }}",
                     style = MaterialTheme.typography.bodySmall)
@@ -271,6 +316,10 @@ private fun ChunkCard(result: ChunkResult, state: UploadState?) {
     }
 }
 
+/**
+ * Copies a picked content [uri] into the app's private cache directory so it
+ * can be streamed by Okio as a real [File]. Runs on [Dispatchers.IO].
+ */
 private suspend fun copyUriToCache(context: android.content.Context, uri: Uri): File =
     withContext(Dispatchers.IO) {
         val tmp = File(context.cacheDir, "selected_${System.currentTimeMillis()}.bin")

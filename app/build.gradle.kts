@@ -1,3 +1,5 @@
+// app: Jetpack Compose demo that consumes the chunk-plugin library.
+// Picks a file, chunks + encrypts it, and uploads with resume support.
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")

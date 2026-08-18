@@ -1,3 +1,6 @@
+// chunk-plugin: redistributable Android library for secure file chunking.
+// Exposes ChunkProvider (chunk + SHA-256 + AES-256-GCM) and ChunkUploader
+// (resumable OkHttp multipart upload). Published as an AAR via the android library plugin.
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
