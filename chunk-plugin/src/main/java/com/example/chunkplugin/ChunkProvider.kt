@@ -148,11 +148,30 @@ object ChunkProvider {
         }
     }
 
-    /** Encrypts [data] with AES-256-GCM and returns a [ChunkResult]. */
+    /**
+     * Encrypts [data] with AES-256-GCM and returns a [ChunkResult].
+     *
+     * IV handling differs by key type:
+     *  - Keystore-backed keys REQUIRE the Keystore to generate the IV, so we
+     *    init the cipher without an IV and read it back from [Cipher.iv]. Supplying
+     *    a caller IV here would throw "Caller provided IV not permitted".
+     *  - PBKDF2-derived keys accept a caller-provided IV; we supply a fresh one.
+     */
     private fun encrypt(data: ByteArray, key: SecretKey, salt: ByteArray): ChunkResult {
-        val iv = ByteArray(IV_SIZE).also { SecureRandom().nextBytes(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+        val iv: ByteArray = when {
+            salt.isEmpty() -> {
+                // Keystore-backed key: let the Keystore pick the IV.
+                cipher.init(Cipher.ENCRYPT_MODE, key)
+                cipher.iv
+            }
+            else -> {
+                // Plain key from PBKDF2: caller supplies a fresh random IV.
+                ByteArray(IV_SIZE).also { SecureRandom().nextBytes(it) }.also {
+                    cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, it))
+                }
+            }
+        }
         val ciphertext = cipher.doFinal(data)
         return ChunkResult(
             index = 0,

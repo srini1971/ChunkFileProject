@@ -136,6 +136,14 @@ private fun MainScreen() {
 
         selectedName?.let { Text("Selected: $it") }
 
+        // Helpful note about accepted file types.
+        Text(
+            "Accepted: any file (*.pdf, *.jpg, *.png, *.mp4, *.mp3, *.zip, " +
+                "*.docx, *.xlsx, *.pptx, *.txt, *.apk)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
         // ---- Chunk size ----------------------------------------------------
         // Digits-only input, capped at 3 digits, defaulting to 4 MB.
         OutlinedTextField(
